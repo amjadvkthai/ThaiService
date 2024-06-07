@@ -17,7 +17,7 @@ namespace UserInformationService
 
             serviceInstaller = new ServiceInstaller();
             serviceInstaller.StartType = ServiceStartMode.Automatic;
-            serviceInstaller.ServiceName = "UserInformationService";
+            serviceInstaller.ServiceName = "ThaiM";
             serviceInstaller.Description = "Thai Monitoring Software";
 
             Installers.Add(processInstaller);

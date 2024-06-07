@@ -5,8 +5,9 @@ using System.Timers;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Management;
-using System.Collections.Generic;
 using System.IO;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 using System.Linq;
 
 namespace UserInformationService
@@ -16,8 +17,9 @@ namespace UserInformationService
         private Timer timer;
         private readonly HttpClient httpClient;
         private const string LogFilePath = @"C:\UserInformationService\log.txt";
-        private const string UserLogFilePath = @"C:\UserInformationService\user_log.txt";
-        private const int LogNetworkDevicesCommand = 128; // Custom command number
+        private const string LastSentFilePath = @"C:\UserInformationService\last_sent.txt";
+        private const int SendAllDataToApi = 128; // Custom command number
+        private DateTime lastSent;
 
         public Service1()
         {
@@ -27,32 +29,94 @@ namespace UserInformationService
 
         protected override void OnStart(string[] args)
         {
-            timer = new Timer(3000); // 3 seconds
+            timer = new Timer(24 * 60 * 60 * 1000); // 24 hours
             timer.Elapsed += OnElapsedTime;
             timer.AutoReset = true;
             timer.Enabled = true;
             Directory.CreateDirectory(Path.GetDirectoryName(LogFilePath));
-            Directory.CreateDirectory(Path.GetDirectoryName(UserLogFilePath));
+
+            lastSent = ReadLastSentTime();
         }
 
         private async void OnElapsedTime(object source, ElapsedEventArgs e)
         {
-            string userName = GetLoggedInUserWithSID(out string userSid);
+            if ((DateTime.Now - lastSent).TotalDays >= 7)
+            {
+                await CollectAndSendData();
+            }
+        }
+
+        private async Task CollectAndSendData()
+        {
+            var (userName, userSid, hostName) = GetLoggedInUserWithSID();
+
+
+            var systemInfo = GatherSystemInformation();
+            var driveInfos = GatherDriveInformation();
+            var installedSoftware = GetInstalledSoftware();
+            var networkDevices = GatherNetworkDevices();
+            var listeningPorts = GatherListeningPorts();
+
+            var softwareNames = new List<string>();
+            var softwareVersions = new List<string>();
+
+            foreach (var software in installedSoftware)
+            {
+                var parts = software.Split(new[] { " - " }, StringSplitOptions.None);
+                if (parts.Length == 2)
+                {
+                    softwareNames.Add(parts[0]);
+                    softwareVersions.Add(parts[1]);
+                }
+                else
+                {
+                    softwareNames.Add(parts[0]);
+                    softwareVersions.Add("N/A");
+                }
+            }
+
+            var dataList = new List<object>();
 
             var data = new
             {
-                UserName = userName,
-                UserSID = userSid,
-                RecordedAt = DateTime.Now
+                userID = userSid,
+                userName = userName,
+                hostName = hostName,
+                os = systemInfo.OS,
+                version = systemInfo.Version,
+                servicePack = systemInfo.ServicePack,
+                physicalMemory = systemInfo.PhysicalMemory,
+                freeMemory = systemInfo.FreeMemory,
+                processor = systemInfo.Processor,
+                cores = systemInfo.Cores,
+                clockSpeed = systemInfo.ClockSpeed,
+                driveName = driveInfos.DriveNames,
+                totalSize = driveInfos.TotalSizes,
+                usedSpace = driveInfos.UsedSpaces,
+                freeSpace = driveInfos.FreeSpaces,
+                softwareName = string.Join(",", softwareNames),
+                softwareVersion = string.Join(",", softwareVersions),
+                networkDeviceName = networkDevices.DeviceNames,
+                macAddress = networkDevices.MacAddresses,
+                protocol = listeningPorts.Protocols,
+                localAddress = listeningPorts.LocalAddresses,
+                remoteAddress = listeningPorts.RemoteAddresses,
+                state = listeningPorts.States,
+                date = DateTime.Now
             };
 
-            var json = JsonSerializer.Serialize(data);
+            dataList.Add(data);
+
+            var json = JsonSerializer.Serialize(dataList);
             var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
             try
             {
-                await httpClient.PostAsync("http://10.200.40.25:85/User/AddUserInfo", content);
-                LogUserInformation(userName, userSid);
+                await httpClient.PostAsync("https://itapp.teamthai.org/api/api/UserInfo", content);
+                lastSent = DateTime.Now; // Update last sent time
+                SaveLastSentTime(lastSent);
+
+                LogData(json); // Log the data to log.txt
             }
             catch (Exception ex)
             {
@@ -61,12 +125,40 @@ namespace UserInformationService
             }
         }
 
-        public string GetLoggedInUserWithSID(out string userSid)
+        private DateTime ReadLastSentTime()
         {
-            userSid = null;
+            if (File.Exists(LastSentFilePath))
+            {
+                string lastSentString = File.ReadAllText(LastSentFilePath);
+                if (DateTime.TryParse(lastSentString, out DateTime lastSentTime))
+                {
+                    return lastSentTime;
+                }
+            }
+            return DateTime.MinValue;
+        }
+
+        private void SaveLastSentTime(DateTime lastSentTime)
+        {
             try
             {
-                string userName = null;
+                File.WriteAllText(LastSentFilePath, lastSentTime.ToString());
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("UserInformationService", $"Error saving last sent time: {ex.Message}", EventLogEntryType.Error);
+                LogError($"Error saving last sent time: {ex.Message}");
+            }
+        }
+
+        public (string UserName, string UserSid, string HostName) GetLoggedInUserWithSID()
+        {
+            string userSid = null;
+            string hostName = null;
+            string userName = null;
+
+            try
+            {
                 ManagementScope scope = new ManagementScope("\\\\.\\root\\cimv2");
                 ObjectQuery query = new ObjectQuery("SELECT * FROM Win32_LogonSession WHERE LogonType = 2");
                 ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, query);
@@ -78,9 +170,14 @@ namespace UserInformationService
                     {
                         userName = account["Name"] + "\\" + account["Domain"];
                         userSid = account["SID"].ToString();
-                        return userName;
+                        break;
                     }
+                    if (!string.IsNullOrEmpty(userName))
+                        break;
                 }
+
+                // Get the hostname
+                hostName = System.Environment.MachineName;
             }
             catch (Exception ex)
             {
@@ -88,46 +185,143 @@ namespace UserInformationService
                 LogError($"Error retrieving logged in user: {ex.Message}");
             }
 
-            return null;
+            return (userName, userSid, hostName);
         }
 
-        private void LogUserInformation(string userName, string userSid)
+        private (string OS, string Version, string ServicePack, string PhysicalMemory, string FreeMemory, string Processor, string Cores, string ClockSpeed) GatherSystemInformation()
         {
+            string os = "N/A", version = "N/A", servicePack = "N/A", physicalMemory = "N/A", freeMemory = "N/A", processor = "N/A", cores = "N/A", clockSpeed = "N/A";
+
             try
             {
-                using (StreamWriter sw = new StreamWriter(UserLogFilePath, true))
+                ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT * FROM Win32_OperatingSystem");
+                foreach (ManagementObject osObj in searcher.Get())
                 {
-                    sw.WriteLine($"{DateTime.Now}: UserName: {userName}, UserSID: {userSid}");
+                    os = osObj["Caption"]?.ToString() ?? "N/A";
+                    version = osObj["Version"]?.ToString() ?? "N/A";
+                    servicePack = osObj["ServicePackMajorVersion"]?.ToString() ?? "N/A";
+                    physicalMemory = ((Convert.ToInt64(osObj["TotalVisibleMemorySize"]) / 1024).ToString("F2") + " MB");
+                    freeMemory = ((Convert.ToInt64(osObj["FreePhysicalMemory"]) / 1024).ToString("F2") + " MB");
+                }
+
+                searcher = new ManagementObjectSearcher("SELECT * FROM Win32_Processor");
+                foreach (ManagementObject cpu in searcher.Get())
+                {
+                    processor = cpu["Name"]?.ToString() ?? "N/A";
+                    cores = cpu["NumberOfCores"]?.ToString() ?? "N/A";
+                    clockSpeed = cpu["MaxClockSpeed"]?.ToString() ?? "N/A" + " MHz";
                 }
             }
             catch (Exception ex)
             {
-                EventLog.WriteEntry("UserInformationService", $"Error writing user information to log file: {ex.Message}", EventLogEntryType.Error);
-                LogError($"Error writing user information to log file: {ex.Message}");
+                EventLog.WriteEntry("UserInformationService", $"Error gathering system information: {ex.Message}", EventLogEntryType.Error);
+                LogError($"Error gathering system information: {ex.Message}");
             }
+
+            return (os, version, servicePack, physicalMemory, freeMemory, processor, cores, clockSpeed);
         }
 
-        private void LogNetworkDevices()
+        private (string DriveNames, string TotalSizes, string UsedSpaces, string FreeSpaces) GatherDriveInformation()
+        {
+            var driveNames = new List<string>();
+            var totalSizes = new List<string>();
+            var usedSpaces = new List<string>();
+            var freeSpaces = new List<string>();
+
+            try
+            {
+                DriveInfo[] allDrives = DriveInfo.GetDrives();
+
+                foreach (DriveInfo drive in allDrives)
+                {
+                    if (drive.IsReady)
+                    {
+                        long totalSize = drive.TotalSize;
+                        long freeSpace = drive.TotalFreeSpace;
+                        long usedSpace = totalSize - freeSpace;
+
+                        driveNames.Add(drive.Name);
+                        totalSizes.Add((totalSize / 1024 / 1024).ToString());
+                        usedSpaces.Add((usedSpace / 1024 / 1024).ToString());
+                        freeSpaces.Add((freeSpace / 1024 / 1024).ToString());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("UserInformationService", $"Error gathering drive information: {ex.Message}", EventLogEntryType.Error);
+                LogError($"Error gathering drive information: {ex.Message}");
+            }
+
+            return (string.Join(",", driveNames), string.Join(",", totalSizes), string.Join(",", usedSpaces), string.Join(",", freeSpaces));
+        }
+
+        private List<string> GetInstalledSoftware()
+        {
+            List<string> softwareList = new List<string>();
+            try
+            {
+                GetInstalledSoftwareFromRegistry(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", Microsoft.Win32.RegistryView.Registry64, softwareList);
+                GetInstalledSoftwareFromRegistry(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", Microsoft.Win32.RegistryView.Registry32, softwareList);
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("UserInformationService", $"Error retrieving installed software: {ex.Message}", EventLogEntryType.Error);
+                LogError($"Error retrieving installed software: {ex.Message}");
+            }
+            return softwareList;
+        }
+
+        private void GetInstalledSoftwareFromRegistry(string registryKey, Microsoft.Win32.RegistryView registryView, List<string> softwareList)
         {
             try
             {
-                string networkDevicesLogFilePath = @"C:\UserInformationService\network_devices_log.txt";
-                Directory.CreateDirectory(Path.GetDirectoryName(networkDevicesLogFilePath));
-
-                using (StreamWriter sw = new StreamWriter(networkDevicesLogFilePath, true))
+                using (Microsoft.Win32.RegistryKey baseKey = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, registryView))
                 {
-                    sw.WriteLine($"{DateTime.Now}: Connected Network Devices:");
-
-                    ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT * FROM Win32_NetworkAdapter WHERE NetConnectionStatus=2");
-                    foreach (ManagementObject adapter in searcher.Get())
+                    using (Microsoft.Win32.RegistryKey key = baseKey.OpenSubKey(registryKey))
                     {
-                        string name = adapter["Name"]?.ToString();
-                        string macAddress = adapter["MACAddress"]?.ToString();
-
-                        if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(macAddress))
+                        foreach (string subkey_name in key.GetSubKeyNames())
                         {
-                            sw.WriteLine($"Name: {name}, MAC Address: {macAddress}");
+                            using (Microsoft.Win32.RegistryKey subkey = key.OpenSubKey(subkey_name))
+                            {
+                                string displayName = subkey.GetValue("DisplayName") as string;
+                                string displayVersion = subkey.GetValue("DisplayVersion") as string;
+                                string publisherName = subkey.GetValue("Publisher") as string;
+
+                                if (!string.IsNullOrEmpty(displayName) && !string.IsNullOrEmpty(publisherName) && !publisherName.Equals("Microsoft Corporation", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    softwareList.Add($"{displayName} - {displayVersion} - {publisherName}");
+                                }
+                            }
                         }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("UserInformationService", $"Error accessing registry key: {registryKey} in view: {registryView}. Error: {ex.Message}", EventLogEntryType.Error);
+                LogError($"Error accessing registry key: {registryKey} in view: {registryView}. Error: {ex.Message}");
+            }
+        }
+
+
+        private (string DeviceNames, string MacAddresses) GatherNetworkDevices()
+        {
+            var deviceNames = new List<string>();
+            var macAddresses = new List<string>();
+
+            try
+            {
+                ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT * FROM Win32_NetworkAdapter WHERE NetConnectionStatus=2");
+                foreach (ManagementObject adapter in searcher.Get())
+                {
+                    string name = adapter["Name"]?.ToString();
+                    string macAddress = adapter["MACAddress"]?.ToString();
+
+                    if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(macAddress))
+                    {
+                        deviceNames.Add(name);
+                        macAddresses.Add(macAddress);
                     }
                 }
             }
@@ -135,6 +329,66 @@ namespace UserInformationService
             {
                 EventLog.WriteEntry("UserInformationService", $"Error writing network devices information to log file: {ex.Message}", EventLogEntryType.Error);
                 LogError($"Error writing network devices information to log file: {ex.Message}");
+            }
+
+            return (string.Join(",", deviceNames), string.Join(",", macAddresses));
+        }
+
+        private (string Protocols, string LocalAddresses, string RemoteAddresses, string States) GatherListeningPorts()
+        {
+            var protocols = new List<string>();
+            var localAddresses = new List<string>();
+            var remoteAddresses = new List<string>();
+            var states = new List<string>();
+
+            try
+            {
+                Process netStatProcess = new Process();
+                netStatProcess.StartInfo.FileName = "netstat.exe";
+                netStatProcess.StartInfo.Arguments = "-an";
+                netStatProcess.StartInfo.UseShellExecute = false;
+                netStatProcess.StartInfo.RedirectStandardOutput = true;
+                netStatProcess.Start();
+
+                string output = netStatProcess.StandardOutput.ReadToEnd();
+                netStatProcess.WaitForExit();
+
+                var lines = output.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
+                var filteredLines = lines.Where(line => line.Contains("LISTENING") || line.Contains("UDP"));
+
+                foreach (var line in filteredLines)
+                {
+                    var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 4)
+                    {
+                        protocols.Add(parts[0]);
+                        localAddresses.Add(parts[1]);
+                        remoteAddresses.Add(parts[2]);
+                        states.Add(parts[3]);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("UserInformationService", $"Error writing listening ports information to log file: {ex.Message}", EventLogEntryType.Error);
+                LogError($"Error writing listening ports information to log file: {ex.Message}");
+            }
+
+            return (string.Join(",", protocols), string.Join(",", localAddresses), string.Join(",", remoteAddresses), string.Join(",", states));
+        }
+
+        private void LogError(string error)
+        {
+            try
+            {
+                using (StreamWriter sw = new StreamWriter(LogFilePath, true))
+                {
+                    sw.WriteLine($"{DateTime.Now}: ERROR: {error}");
+                }
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("UserInformationService", $"Error writing to log file: {ex.Message}", EventLogEntryType.Error);
             }
         }
 
@@ -153,27 +407,12 @@ namespace UserInformationService
             }
         }
 
-        private void LogError(string error)
-        {
-            try
-            {
-                using (StreamWriter sw = new StreamWriter(LogFilePath, true))
-                {
-                    sw.WriteLine($"{DateTime.Now}: ERROR: {error}");
-                }
-            }
-            catch (Exception ex)
-            {
-                EventLog.WriteEntry("UserInformationService", $"Error writing to log file: {ex.Message}", EventLogEntryType.Error);
-            }
-        }
-
         protected override void OnCustomCommand(int command)
         {
             base.OnCustomCommand(command);
-            if (command == LogNetworkDevicesCommand)
+            if (command == SendAllDataToApi)
             {
-                LogNetworkDevices();
+                Task.Run(() => CollectAndSendData()); // Call the function to send all data to API
             }
         }
 
