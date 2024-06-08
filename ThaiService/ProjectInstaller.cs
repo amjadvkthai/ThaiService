@@ -1,4 +1,6 @@
-﻿using System.ComponentModel;
+﻿using System;
+using System.Collections;
+using System.ComponentModel;
 using System.Configuration.Install;
 using System.ServiceProcess;
 
@@ -22,6 +24,16 @@ namespace UserInformationService
 
             Installers.Add(processInstaller);
             Installers.Add(serviceInstaller);
+        }
+
+        protected override void OnAfterInstall(IDictionary savedState)
+        {
+            base.OnAfterInstall(savedState);
+
+            using (ServiceController sc = new ServiceController(serviceInstaller.ServiceName))
+            {
+                sc.Start();
+            }
         }
     }
 }

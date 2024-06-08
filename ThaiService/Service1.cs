@@ -16,8 +16,8 @@ namespace UserInformationService
     {
         private Timer timer;
         private readonly HttpClient httpClient;
-        private const string LogFilePath = @"C:\UserInformationService\log.txt";
-        private const string LastSentFilePath = @"C:\UserInformationService\last_sent.txt";
+        private const string LogFilePath = @"C:\Program Files\ThaiM\log.txt";
+        private const string LastSentFilePath = @"C:\Program Files\ThaiM\last_sent.txt";
         private const int SendAllDataToApi = 128; // Custom command number
         private DateTime lastSent;
 
@@ -36,6 +36,12 @@ namespace UserInformationService
             Directory.CreateDirectory(Path.GetDirectoryName(LogFilePath));
 
             lastSent = ReadLastSentTime();
+
+            // Check if it's been 7 days since the last sent time, send data if needed
+            if ((DateTime.Now - lastSent).TotalDays >= 7)
+            {
+                Task.Run(() => CollectAndSendData());
+            }
         }
 
         private async void OnElapsedTime(object source, ElapsedEventArgs e)
@@ -49,7 +55,6 @@ namespace UserInformationService
         private async Task CollectAndSendData()
         {
             var (userName, userSid, hostName) = GetLoggedInUserWithSID();
-
 
             var systemInfo = GatherSystemInformation();
             var driveInfos = GatherDriveInformation();
@@ -112,11 +117,18 @@ namespace UserInformationService
 
             try
             {
-                await httpClient.PostAsync("https://itapp.teamthai.org/api/api/UserInfo", content);
-                lastSent = DateTime.Now; // Update last sent time
-                SaveLastSentTime(lastSent);
+                var response = await httpClient.PostAsync("https://itapp.teamthai.org/api/api/UserInfo", content);
+                if (response.IsSuccessStatusCode)
+                {
+                    lastSent = DateTime.Now; // Update last sent time
+                    SaveLastSentTime(lastSent);
 
-                LogData(json); // Log the data to log.txt
+                    //LogData(json); // Log the data to log.txt
+                }
+                else
+                {
+                    throw new HttpRequestException($"Failed to send data. Status code: {response.StatusCode}");
+                }
             }
             catch (Exception ex)
             {
@@ -200,8 +212,8 @@ namespace UserInformationService
                     os = osObj["Caption"]?.ToString() ?? "N/A";
                     version = osObj["Version"]?.ToString() ?? "N/A";
                     servicePack = osObj["ServicePackMajorVersion"]?.ToString() ?? "N/A";
-                    physicalMemory = ((Convert.ToInt64(osObj["TotalVisibleMemorySize"]) / 1024).ToString("F2") + " MB");
-                    freeMemory = ((Convert.ToInt64(osObj["FreePhysicalMemory"]) / 1024).ToString("F2") + " MB");
+                    physicalMemory = ((Convert.ToInt64(osObj["TotalVisibleMemorySize"]) / 1024.0 / 1024).ToString("F2") + " GB");
+                    freeMemory = ((Convert.ToInt64(osObj["FreePhysicalMemory"]) / 1024.0 / 1024).ToString("F2") + " GB");
                 }
 
                 searcher = new ManagementObjectSearcher("SELECT * FROM Win32_Processor");
@@ -220,6 +232,7 @@ namespace UserInformationService
 
             return (os, version, servicePack, physicalMemory, freeMemory, processor, cores, clockSpeed);
         }
+
 
         private (string DriveNames, string TotalSizes, string UsedSpaces, string FreeSpaces) GatherDriveInformation()
         {
