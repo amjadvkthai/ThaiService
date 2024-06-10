@@ -126,7 +126,7 @@ namespace UserInformationService
                     lastSent = DateTime.Now; // Update last sent time
                     SaveLastSentTime(lastSent);
 
-                    LogData(json); // Log the data to log.txt
+                   // LogData(json); // Log the data to log.txt
                 }
                 else
                 {
