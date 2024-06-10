@@ -9,6 +9,7 @@ using System.IO;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Linq;
+using System.Security.Principal;
 
 namespace UserInformationService
 {
@@ -37,16 +38,18 @@ namespace UserInformationService
 
             lastSent = ReadLastSentTime();
 
-            // Check if it's been 7 days since the last sent time, send data if needed
-            if ((DateTime.Now - lastSent).TotalDays >= 7)
-            {
-                Task.Run(() => CollectAndSendData());
-            }
+            // Check if it's been 1 day since the last sent time, send data if needed
+            Task.Run(() => CheckAndSendDataImmediately());
         }
 
         private async void OnElapsedTime(object source, ElapsedEventArgs e)
         {
-            if ((DateTime.Now - lastSent).TotalDays >= 7)
+            await CheckAndSendDataImmediately();
+        }
+
+        private async Task CheckAndSendDataImmediately()
+        {
+            if ((DateTime.Now - lastSent).TotalDays >= 1)
             {
                 await CollectAndSendData();
             }
@@ -123,7 +126,7 @@ namespace UserInformationService
                     lastSent = DateTime.Now; // Update last sent time
                     SaveLastSentTime(lastSent);
 
-                    //LogData(json); // Log the data to log.txt
+                    LogData(json); // Log the data to log.txt
                 }
                 else
                 {
@@ -166,30 +169,30 @@ namespace UserInformationService
         public (string UserName, string UserSid, string HostName) GetLoggedInUserWithSID()
         {
             string userSid = null;
-            string hostName = null;
+            string hostName = System.Environment.MachineName;
             string userName = null;
 
             try
             {
-                ManagementScope scope = new ManagementScope("\\\\.\\root\\cimv2");
-                ObjectQuery query = new ObjectQuery("SELECT * FROM Win32_LogonSession WHERE LogonType = 2");
-                ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, query);
-                ManagementObjectCollection queryCollection = searcher.Get();
+                // Get the currently logged in user
+                ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT UserName FROM Win32_ComputerSystem");
+                ManagementObjectCollection collection = searcher.Get();
 
-                foreach (ManagementObject logon in queryCollection)
+                foreach (ManagementObject obj in collection)
                 {
-                    foreach (ManagementObject account in logon.GetRelated("Win32_Account"))
-                    {
-                        userName = account["Name"] + "\\" + account["Domain"];
-                        userSid = account["SID"].ToString();
-                        break;
-                    }
-                    if (!string.IsNullOrEmpty(userName))
-                        break;
+                    userName = obj["UserName"]?.ToString();
+                    break;
                 }
 
-                // Get the hostname
-                hostName = System.Environment.MachineName;
+                if (!string.IsNullOrEmpty(userName))
+                {
+                    string domainName = userName.Split('\\')[0];
+                    string accountName = userName.Split('\\')[1];
+
+                    NTAccount account = new NTAccount(domainName, accountName);
+                    SecurityIdentifier sid = (SecurityIdentifier)account.Translate(typeof(SecurityIdentifier));
+                    userSid = sid.ToString();
+                }
             }
             catch (Exception ex)
             {
@@ -232,7 +235,6 @@ namespace UserInformationService
 
             return (os, version, servicePack, physicalMemory, freeMemory, processor, cores, clockSpeed);
         }
-
 
         private (string DriveNames, string TotalSizes, string UsedSpaces, string FreeSpaces) GatherDriveInformation()
         {
@@ -316,7 +318,6 @@ namespace UserInformationService
                 LogError($"Error accessing registry key: {registryKey} in view: {registryView}. Error: {ex.Message}");
             }
         }
-
 
         private (string DeviceNames, string MacAddresses) GatherNetworkDevices()
         {
