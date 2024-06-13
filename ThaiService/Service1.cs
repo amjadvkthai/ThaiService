@@ -21,6 +21,7 @@ namespace UserInformationService
         private const string LastSentFilePath = @"C:\Program Files\ThaiM\last_sent.txt";
         private const int SendAllDataToApi = 128; // Custom command number
         private DateTime lastSent;
+        private TimeSpan intervalCheck = TimeSpan.FromHours(1); // 1 hour check interval
 
         public Service1()
         {
@@ -30,7 +31,7 @@ namespace UserInformationService
 
         protected override void OnStart(string[] args)
         {
-            timer = new Timer(24 * 60 * 60 * 1000); // 24 hours
+            timer = new Timer(intervalCheck.TotalMilliseconds); // Check every 1 hour
             timer.Elapsed += OnElapsedTime;
             timer.AutoReset = true;
             timer.Enabled = true;
@@ -38,7 +39,7 @@ namespace UserInformationService
 
             lastSent = ReadLastSentTime();
 
-            // Check if it's been 1 day since the last sent time, send data if needed
+            // Check if it's been 1 hour since the last sent time, send data if needed
             Task.Run(() => CheckAndSendDataImmediately());
         }
 
@@ -49,7 +50,7 @@ namespace UserInformationService
 
         private async Task CheckAndSendDataImmediately()
         {
-            if ((DateTime.Now - lastSent).TotalDays >= 1)
+            if ((DateTime.Now - lastSent).TotalHours >= 1 || lastSent == DateTime.MinValue)
             {
                 await CollectAndSendData();
             }
@@ -126,7 +127,7 @@ namespace UserInformationService
                     lastSent = DateTime.Now; // Update last sent time
                     SaveLastSentTime(lastSent);
 
-                   // LogData(json); // Log the data to log.txt
+                    // LogData(json); // Log the data to log.txt
                 }
                 else
                 {
