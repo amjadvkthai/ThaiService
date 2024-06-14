@@ -257,9 +257,9 @@ namespace UserInformationService
                         long usedSpace = totalSize - freeSpace;
 
                         driveNames.Add(drive.Name);
-                        totalSizes.Add((totalSize / 1024 / 1024).ToString());
-                        usedSpaces.Add((usedSpace / 1024 / 1024).ToString());
-                        freeSpaces.Add((freeSpace / 1024 / 1024).ToString());
+                        totalSizes.Add((totalSize / 1024.0 / 1024.0 / 1024.0).ToString("F2") + " GB");
+                        usedSpaces.Add((usedSpace / 1024.0 / 1024.0 / 1024.0).ToString("F2") + " GB");
+                        freeSpaces.Add((freeSpace / 1024.0 / 1024.0 / 1024.0).ToString("F2") + " GB");
                     }
                 }
             }
@@ -271,6 +271,7 @@ namespace UserInformationService
 
             return (string.Join(",", driveNames), string.Join(",", totalSizes), string.Join(",", usedSpaces), string.Join(",", freeSpaces));
         }
+
 
         private List<string> GetInstalledSoftware()
         {
@@ -360,7 +361,10 @@ namespace UserInformationService
             {
                 Process netStatProcess = new Process();
                 netStatProcess.StartInfo.FileName = "netstat.exe";
-                netStatProcess.StartInfo.Arguments = "-an";
+                netStatProcess.StartInfo.Arguments = "-anob"; // -a: Display all connections and listening ports
+                                                              // -n: Display addresses and port numbers in numerical form
+                                                              // -o: Display the owning process ID associated with each connection
+                                                              // -b: Display the executable involved in creating each connection or listening port
                 netStatProcess.StartInfo.UseShellExecute = false;
                 netStatProcess.StartInfo.RedirectStandardOutput = true;
                 netStatProcess.Start();
@@ -369,7 +373,22 @@ namespace UserInformationService
                 netStatProcess.WaitForExit();
 
                 var lines = output.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
-                var filteredLines = lines.Where(line => line.Contains("LISTENING") || line.Contains("UDP"));
+
+                // Skip the header line
+                int headerLineCount = 0;
+                foreach (var line in lines)
+                {
+                    if (line.StartsWith("Proto"))
+                    {
+                        headerLineCount++;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                var filteredLines = lines.Skip(headerLineCount);
 
                 foreach (var line in filteredLines)
                 {
@@ -391,7 +410,6 @@ namespace UserInformationService
 
             return (string.Join(",", protocols), string.Join(",", localAddresses), string.Join(",", remoteAddresses), string.Join(",", states));
         }
-
         private void LogError(string error)
         {
             try
