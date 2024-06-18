@@ -21,7 +21,7 @@ namespace UserInformationService
         private const string LastSentFilePath = @"C:\Program Files\ThaiM\last_sent.txt";
         private const int SendAllDataToApi = 128; // Custom command number
         private DateTime lastSent;
-        private TimeSpan intervalCheck = TimeSpan.FromHours(1); // 1 hour check interval
+        private TimeSpan intervalCheck = TimeSpan.FromHours(3); // 1 hour check interval
 
         public Service1()
         {
@@ -50,7 +50,7 @@ namespace UserInformationService
 
         private async Task CheckAndSendDataImmediately()
         {
-            if ((DateTime.Now - lastSent).TotalHours >= 1 || lastSent == DateTime.MinValue)
+            if ((DateTime.Now - lastSent).TotalHours >= 3 || lastSent == DateTime.MinValue)
             {
                 await CollectAndSendData();
             }
